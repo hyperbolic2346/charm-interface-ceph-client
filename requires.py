@@ -114,6 +114,10 @@ class CephClientRequires(RelationBase):
         hosts = []
         addrs = self.get_remote_all('ceph-public-address')
         for addr in addrs:
-            hosts.append('{}:6789'.format(format_ipv6_addr(addr) or addr))
+            if ' ' in addr:
+                for addr in addr.split(' '):
+                    hosts.append(format_ipv6_addr(addr) or addr)
+            else:
+                hosts.append('{}:6789'.format(format_ipv6_addr(addr) or addr))
         hosts.sort()
         return hosts
