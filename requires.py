@@ -47,19 +47,17 @@ class CephClientRequires(RelationBase):
         if all(data.values()):
             self.set_state('{relation_name}.available')
 
-        json_rq = self.get_local(key='broker_req')
-        if json_rq:
-            rq = CephBrokerRq()
-            j = json.loads(json_rq)
-            rq.ops = j['ops']
-            log("changed broker_req: {}".format(rq.ops))
-
-            if rq and is_request_complete(rq,
-                                          relation=self.relation_name):
-                log("Setting ceph-client.pools.available")
+        all_requests = self.get_local(key='broker_reqs')
+        if all_requests:
+            incomplete = []
+            for name, json_rq in all_requests.items():
+                req = json.loads(json_rq)
+                if not is_request_complete(req['ops']):
+                    incomplete.append(name)
+            if len(incomplete) == 0:
                 self.set_state('{relation_name}.pools.available')
             else:
-                log("incomplete request. broker_req not found")
+                log("incomplete requests {}.".format(incomplete.join(', ')))
 
     @hook('{requires:ceph-client}-relation-{broken}')
     def broken(self):
@@ -75,25 +73,54 @@ class CephClientRequires(RelationBase):
         @param replicas: number of replicas for supporting pools
         """
         # json.dumps of the CephBrokerRq()
-        json_rq = self.get_local(key='broker_req')
+        requests = self.get_local(key='broker_reqs') or {}
 
-        if not json_rq:
+        if name not in requests:
             rq = CephBrokerRq()
             rq.add_op_create_pool(name="{}".format(name),
                                   replica_count=replicas,
                                   weight=None)
-            self.set_local(key='broker_req', value=rq.request)
+            if not requests:
+                requests = {}
+
+            requests[name] = rq.request
+            self.set_local(key='broker_reqs', value=requests)
             send_request_if_needed(rq, relation=self.relation_name)
+            self.remove_state('{relation_name}.pools.available')
         else:
             rq = CephBrokerRq()
             try:
-                j = json.loads(json_rq)
-                log("Json request: {}".format(json_rq))
+                j = json.loads(requests[name])
                 rq.ops = j['ops']
                 send_request_if_needed(rq, relation=self.relation_name)
             except ValueError as err:
                 log("Unable to decode broker_req: {}.  Error: {}".format(
-                    json_rq, err))
+                    requests[name], err))
+
+    def create_pools(self, names, replicas=3):
+        """
+        Request pools setup
+
+        @param name: list of pool names to create
+        @param replicas: number of replicas for supporting pools
+        """
+        # json.dumps of the CephBrokerRq()
+        requests = self.get_local(key='broker_reqs') or {}
+
+        new_names = [name for name in names if name not in requests]
+
+        # existing names get ignored here
+        # new names get added to a single request
+        if new_names:
+            rq = CephBrokerRq()
+            for name in new_names:
+                rq.add_op_create_pool(name="{}".format(name),
+                                      replica_count=replicas,
+                                      weight=None)
+                requests[name] = rq.request
+            self.set_local(key='broker_reqs', value=requests)
+            send_request_if_needed(rq, relation=self.relation_name)
+            self.remove_state('{relation_name}.pools.available')
 
     def get_remote_all(self, key, default=None):
         """Return a list of all values presented by remote units for key"""
